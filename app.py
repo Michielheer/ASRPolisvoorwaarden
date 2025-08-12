@@ -54,6 +54,15 @@ COMPARER_SYSTEM_PROMPT = (
     "- Na de volledige weergave: geef exact dezelfde tabel ook als CSV in één codeblock met taal-tag csv (alleen de tabel, geen extra tekst).\n"
 )
 
+SIMPLE_SYSTEM_PROMPT = (
+    "Je vergelijkt kort en duidelijk de inhoud van twee polisdocumenten (ASR vs Andere verzekeraar).\n"
+    "Geef alleen de belangrijkste inhoudelijke verschillen in simpele bullets: dekking, uitsluitingen, limieten/bedragen, voorwaarden/wachttijden, plichten/meldingen, schadeafhandeling.\n"
+    "- Vermijd tabellen en jargon.\n"
+    "- Maximaal ~12 bullets, puntsgewijs.\n"
+    "- Benoem per bullet het verschil en citeer kort een relevante zinsnede tussen aanhalingstekens indien nuttig.\n"
+    "- Reageer in het Nederlands.\n"
+)
+
 
 def read_pdf_bytes(file_bytes: bytes) -> str:
     parts = []
@@ -95,7 +104,7 @@ def extract_csv_block(text: str) -> Optional[str]:
 def main():
     st.set_page_config(page_title="ASR vs Andere verzekeraar – AI polisvergelijker", layout="wide")
     st.title("ASR vs Andere verzekeraar – AI polisvergelijker")
-    st.caption("Upload twee PDF's (ASR en een andere verzekeraar). De AI maakt een volledige, letterlijke vergelijking in tabelvorm.")
+    st.caption("Upload twee PDF's (ASR en andere verzekeraar). Kies ‘Simpel’ voor korte bullets of ‘Uitgebreid’ voor tabel+CSV.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -103,7 +112,8 @@ def main():
     with col2:
         file_other = st.file_uploader("PDF – Andere verzekeraar", type=["pdf"], key="pdf_other")
 
-    max_chars = st.slider("Max. tekens per document (voor tokenbeperking)", 5_000, 200_000, 40_000, step=5_000)
+    mode = st.selectbox("Vergelijkingsmodus", ["Simpel (inhoud)", "Uitgebreid (tabel + CSV)"])
+    max_chars = st.slider("Max. tekens per document", 5_000, 200_000, 40_000, step=5_000)
 
     st.sidebar.header("AI-instellingen")
     provided_key = st.sidebar.text_input("OPENAI_API_KEY (laat leeg voor secrets/env)", type="password")
@@ -130,26 +140,34 @@ def main():
             st.error("Kon geen tekst uit een of beide PDF's extraheren. Probeer andere bestanden of hogere kwaliteit.")
             return
 
-        # Beperk lengte indien nodig
         def trunc(s: str) -> str:
             return s[: max_chars]
 
-        user_msg = (
-            "Vergelijk onderstaande polisvoorwaarden. Houd je strikt aan de system prompt.\n\n"
-            f"ASR (volledige tekst, mogelijk ingekort):\n{trunc(text_asr)}\n\n"
-            f"Andere verzekeraar (volledige tekst, mogelijk ingekort):\n{trunc(text_other)}\n"
-        )
+        if mode.startswith("Simpel"):
+            system_prompt = SIMPLE_SYSTEM_PROMPT
+            user_msg = (
+                "Geef beknopt de belangrijkste verschillen in bullets (max ~12): dekking, uitsluitingen, limieten, voorwaarden, plichten, schadeafhandeling.\n\n"
+                f"ASR (ingekort):\n{trunc(text_asr)}\n\n"
+                f"Andere verzekeraar (ingekort):\n{trunc(text_other)}\n"
+            )
+        else:
+            system_prompt = COMPARER_SYSTEM_PROMPT
+            user_msg = (
+                "Vergelijk onderstaande polisvoorwaarden. Houd je strikt aan de system prompt.\n\n"
+                f"ASR (volledige tekst, mogelijk ingekort):\n{trunc(text_asr)}\n\n"
+                f"Andere verzekeraar (volledige tekst, mogelijk ingekort):\n{trunc(text_other)}\n"
+            )
 
         client = OpenAI(api_key=effective_key)
-        with st.spinner("AI-vergelijking genereren met GPT-4o-mini..."):
+        with st.spinner("AI-vergelijking genereren..."):
             try:
                 resp = client.chat.completions.create(
                     model=model_name,
                     messages=[
-                        {"role": "system", "content": COMPARER_SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_msg},
                     ],
-                    temperature=0.1,
+                    temperature=0.2 if mode.startswith("Simpel") else 0.1,
                 )
                 content = resp.choices[0].message.content or ""
             except Exception as e:
@@ -159,25 +177,25 @@ def main():
         st.subheader("AI-resultaat")
         st.markdown(content)
 
-        # Probeer CSV te extraheren voor download
-        csv_text = extract_csv_block(content)
-        if csv_text:
-            try:
-                df = pd.read_csv(io.StringIO(csv_text))
-                st.subheader("Tabel (CSV omgezet)")
-                st.dataframe(df, use_container_width=True)
-                st.download_button(
-                    "Download tabel (CSV)",
-                    data=csv_text.encode("utf-8"),
-                    file_name="asr_vs_ander_vergelijking.csv",
-                    mime="text/csv",
-                )
-            except Exception:
-                st.info("Kon CSV-onderdeel niet parseren. Download of kopieer het CSV-codeblok handmatig.")
-        else:
-            st.info("Geen CSV-codeblok gedetecteerd in AI-output. Je kunt de tabel handmatig kopiëren.")
+        if not mode.startswith("Simpel"):
+            csv_text = extract_csv_block(content)
+            if csv_text:
+                try:
+                    df = pd.read_csv(io.StringIO(csv_text))
+                    st.subheader("Tabel (CSV omgezet)")
+                    st.dataframe(df, use_container_width=True)
+                    st.download_button(
+                        "Download tabel (CSV)",
+                        data=csv_text.encode("utf-8"),
+                        file_name="asr_vs_ander_vergelijking.csv",
+                        mime="text/csv",
+                    )
+                except Exception:
+                    st.info("Kon CSV-onderdeel niet parseren. Download of kopieer het CSV-codeblok handmatig.")
+            else:
+                st.info("Geen CSV-codeblok gedetecteerd in AI-output. Je kunt de tabel handmatig kopiëren.")
 
-    st.caption("Deze app voert uitsluitend een AI-vergelijking uit conform het vaste format. Productkeuze is verwijderd.")
+    st.caption("Snel: kies ‘Simpel (inhoud)’. Uitgebreid: kies ‘Uitgebreid (tabel + CSV)’.")
 
 
 if __name__ == "__main__":

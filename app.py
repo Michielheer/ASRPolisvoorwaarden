@@ -23,6 +23,36 @@ except Exception:
     OpenAI = None  # type: ignore
 
 
+def detect_insurer_name_from_text(text: str) -> Optional[str]:
+    """Heuristische detectie van maatschappijnaam in de eerste pagina/regels."""
+    snippet = text[:4000]
+    lines = [l.strip() for l in snippet.splitlines() if l.strip()]
+
+    known_brands = [
+        "ASR", "Achmea", "Centraal Beheer", "Interpolis", "Allianz", "Aegon", "NN", "Nationale-Nederlanden",
+        "Univé", "Inshared", "OHRA", "FBTO", "VGZ", "Zilveren Kruis", "Reaal", "de Goudse", "Klaverblad",
+        "a.s.r.", "ASR Verzekeringen", "Allsecur", "ANWB Verzekeren"
+    ]
+    for l in lines[:40]:
+        for brand in known_brands:
+            if brand.lower() in l.lower():
+                return brand
+
+    # Algemene patronen: bedrijfsnaam + NV/BV/Verzekeringen
+    company_pattern = re.compile(
+        r"\b([A-Z][A-Za-z0-9&\-.,' ]{2,}?)(?:\s+(?:N\.?V\.?|B\.?V\.?|Verzekeringen|Schadeverzekeringen|Levensverzekeringen|Verzekeraar))\b",
+        re.IGNORECASE,
+    )
+    for l in lines[:60]:
+        m = company_pattern.search(l)
+        if m:
+            candidate = m.group(1).strip(" -,.')(")
+            # voorkom te generieke woorden
+            if len(candidate) >= 2 and not candidate.lower().startswith("polis"):
+                return candidate
+    return None
+
+
 COMPARER_SYSTEM_PROMPT = (
     "Rol\n"
     "Jij bent een polisvoorwaardenvergelijker, gespecialiseerd in ASR en vergelijking met andere verzekeraars. Je werkt voor professionele gebruikers (intermediairs, acceptanten, schadebehandelaars).\n\n"
@@ -33,7 +63,8 @@ COMPARER_SYSTEM_PROMPT = (
     "2) Bepaal onderwerpen/artikelen op basis van de kop- en nummerstructuur in de teksten. Neem alle relevante onderwerpen op.\n"
     "3) Produceer één tabel met exact 4 kolommen:\n"
     "   - Onderwerp\n   - ASR\n   - Andere verzekeraar\n   - Verschillen\n"
-    "4) Na de tabel: geef een ‘Samenvatting en Slotanalyse’, daarna twee lijsten (‘Bijzonderheden alleen in ASR’ en ‘Bijzonderheden alleen in ANDER’), en sluit af met een ‘Eindconclusie over impact op de verzekeringspraktijk’.\n\n"
+    "4) Voeg als eerste rij toe: Onderwerp='Maatschappij', ASR='ASR', Andere verzekeraar='<gedetecteerde naam of onbekend>'.\n"
+    "5) Na de tabel: geef een ‘Samenvatting en Slotanalyse’, daarna twee lijsten (‘Bijzonderheden alleen in ASR’ en ‘Bijzonderheden alleen in ANDER’), en sluit af met een ‘Eindconclusie over impact op de verzekeringspraktijk’.\n\n"
     "Inhoudsregels\n"
     "- In ‘ASR’ en ‘Andere verzekeraar’: ALTIJD de volledige, letterlijke tekst zoals in het document. Niet samenvatten.\n"
     "- Verboden: ‘idem’, ‘zelfde’, ‘zoals’, ‘zoals eerder’, ‘zoals onder meer’, ‘zoals bijvoorbeeld’, ‘o.a.’, ‘e.d.’, ‘gelijk aan’.\n"
@@ -41,16 +72,11 @@ COMPARER_SYSTEM_PROMPT = (
     "- Uitsluitingen: ALLE punten afzonderlijk, puntsgewijs en letterlijk opnemen.\n"
     "- Waarderegelingen: ALTIJD volledig uitschrijven (bedragen, limieten, afschrijvingen, maxima, wachttijden, eigen risico’s).\n"
     "- Niet verwijzen naar andere artikelen; citeer relevante tekst hier integraal.\n\n"
-    "Outputformat (strikt)\n"
-    "- Eén tabel met de kolommen: Onderwerp | ASR | Andere verzekeraar | Verschillen.\n"
-    "- In ‘Verschillen’: benoem concreet, letterlijk wat afwijkt (bijv. ‘ASR bevat uitsluiting X: “…”’; ‘Ander bevat limiet €…’).\n"
-    "- Na de tabel, geef in deze volgorde:\n  A) Samenvatting en Slotanalyse\n  B) Bijzonderheden alleen in ASR\n  C) Bijzonderheden alleen in ANDER\n  D) Eindconclusie over impact op verzekeringspraktijk.\n\n"
-    "Belangrijk\n"
-    "- Wanneer een onderwerp niet voorkomt: zet ‘Niet aanwezig in ASR’ of ‘Niet aanwezig in ANDER’.\n"
-    "- Behoud opsommingen/nummering waar mogelijk.\n"
-    "- Reageer altijd in het Nederlands.\n"
-    "- Geen juridisch advies of interpretatie; uitsluitend letterlijke vergelijking en feitelijke vaststelling.\n\n"
-    "Extra instructie voor export\n"
+    "Kolom ‘Verschillen’ (strikt)\n"
+    "- Gebruik labels per onderdeel: [ADDED], [REMOVED], [CHANGED], [UNCHANGED].\n"
+    "- Citeer steeds kort letterlijk (‘…’) wat verschilt of nieuw/weg is, met bedragen/limieten in cijfers.\n"
+    "- Splits meerdere punten in sub-bullets of puntkomma’s. Geen interpretatie, alleen verifieerbare tekst.\n\n"
+    "Output en export\n"
     "- Na de volledige weergave: geef exact dezelfde tabel ook als CSV in één codeblock met taal-tag csv (alleen de tabel, geen extra tekst).\n"
 )
 
@@ -63,9 +89,11 @@ SIMPLE_SYSTEM_PROMPT = (
     "- Reageer in het Nederlands.\n"
 )
 
-# Aanvullende instructie om ook een compacte CSV-tabel te leveren
+# Aanvullende instructie om ook een compacte CSV-tabel te leveren, met maatschappij-rij en verschil-labels
 SIMPLE_TABLE_ADDON = (
     "\n\nGeef daarnaast dezelfde verschillen in een compacte tabel met 4 kolommen (Onderwerp, ASR, Andere verzekeraar, Verschillen).\n"
+    "- Voeg als eerste rij toe: Onderwerp='Maatschappij', ASR='ASR', Andere verzekeraar='<gedetecteerde naam of onbekend>'.\n"
+    "- In kolom ‘Verschillen’ gebruik labels [ADDED]/[REMOVED]/[CHANGED]/[UNCHANGED] met korte letterlijke citaten en bedragen.\n"
     "Geef exact dezelfde tabel ook als CSV in één codeblock met taal-tag csv (alleen de tabel, geen extra tekst).\n"
 )
 
@@ -153,6 +181,10 @@ def main():
             st.error("Kon geen tekst uit een of beide PDF's extraheren. Probeer andere bestanden of hogere kwaliteit.")
             return
 
+        other_name = detect_insurer_name_from_text(text_other)
+        if other_name:
+            st.info(f"Gedetecteerde maatschappij (Andere): {other_name}")
+
         def trunc(s: str) -> str:
             return s[: max_chars]
 
@@ -161,6 +193,7 @@ def main():
             user_msg = (
                 "Geef beknopt de belangrijkste verschillen."
                 + (" Voeg ook de compacte tabel en CSV toe." if want_table_simple else "")
+                + (f" Gebruik voor de maatschappij-rij indien mogelijk: '{other_name}'." if other_name else "")
                 + "\n\n"
                 f"ASR (ingekort):\n{trunc(text_asr)}\n\n"
                 f"Andere verzekeraar (ingekort):\n{trunc(text_other)}\n"
@@ -169,8 +202,9 @@ def main():
             system_prompt = COMPARER_SYSTEM_PROMPT
             user_msg = (
                 "Vergelijk onderstaande polisvoorwaarden. Houd je strikt aan de system prompt.\n\n"
-                f"ASR (volledige tekst, mogelijk ingekort):\n{trunc(text_asr)}\n\n"
-                f"Andere verzekeraar (volledige tekst, mogelijk ingekort):\n{trunc(text_other)}\n"
+                + (f"Indien je de andere maatschappij kunt vaststellen, gebruik die in de eerste rij 'Maatschappij': '{other_name}'.\n\n" if other_name else "")
+                + f"ASR (volledige tekst, mogelijk ingekort):\n{trunc(text_asr)}\n\n"
+                + f"Andere verzekeraar (volledige tekst, mogelijk ingekort):\n{trunc(text_other)}\n"
             )
 
         client = OpenAI(api_key=effective_key)

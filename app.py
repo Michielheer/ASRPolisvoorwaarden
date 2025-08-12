@@ -89,14 +89,20 @@ def read_pdf_bytes(file_bytes: bytes) -> str:
     return "\n".join(parts)
 
 
-def get_openai_api_key() -> Optional[str]:
+def get_model_api_key() -> Optional[str]:
+    # Prefer generieke sleutelnaam, met fallback voor compatibiliteit
     key = None
     try:
-        key = st.secrets.get("OPENAI_API_KEY")  # type: ignore
+        key = st.secrets.get("AI_API_KEY")  # type: ignore
     except Exception:
         key = None
     if not key:
-        key = os.environ.get("OPENAI_API_KEY")
+        try:
+            key = st.secrets.get("OPENAI_API_KEY")  # type: ignore
+        except Exception:
+            key = None
+    if not key:
+        key = os.environ.get("AI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     return key
 
 
@@ -123,12 +129,12 @@ def main():
     max_chars = st.slider("Max. tekens per document", 5_000, 200_000, 40_000, step=5_000)
 
     st.sidebar.header("AI-instellingen")
-    provided_key = st.sidebar.text_input("OPENAI_API_KEY (laat leeg voor secrets/env)", type="password")
-    effective_key = provided_key or get_openai_api_key()
+    provided_key = st.sidebar.text_input("AI_API_KEY (laat leeg voor secrets/env)", type="password")
+    effective_key = provided_key or get_model_api_key()
     model_name = "gpt-4o-mini"
 
     if OpenAI is None:
-        st.sidebar.error("OpenAI client niet gevonden. Installeer afhankelijkheden en herstart: pip install -r requirements.txt")
+        st.sidebar.error("AI client niet gevonden. Installeer afhankelijkheden en herstart: pip install -r requirements.txt")
         return
 
     if st.button("Genereer AI-vergelijking", type="primary"):
@@ -136,7 +142,7 @@ def main():
             st.error("Upload zowel ASR als Andere verzekeraar.")
             return
         if not effective_key:
-            st.error("Geen OPENAI_API_KEY gevonden. Vul in of configureer via secrets/env.")
+            st.error("Geen AI_API_KEY gevonden. Vul in of configureer via secrets/env.")
             return
 
         with st.spinner("PDF's lezen..."):
@@ -205,7 +211,7 @@ def main():
             else:
                 st.info("Geen CSV-codeblok gedetecteerd in AI-output. Kies ‘Uitgebreid’ of laat de AI een tabel/CSV genereren.")
 
-    st.caption("Snel: ‘Simpel (inhoud)’. Mooie tabel: vink ‘Toon resultaat als tabel’ aan of kies ‘Uitgebreid’.\nSecrets via Streamlit Cloud instellen.")
+    st.caption("Snel: ‘Simpel (inhoud)’. Mooie tabel: vink ‘Toon resultaat als tabel’ aan of kies ‘Uitgebreid’.\nSecrets via Cloud instellen onder AI_API_KEY.")
 
 
 if __name__ == "__main__":

@@ -63,6 +63,12 @@ SIMPLE_SYSTEM_PROMPT = (
     "- Reageer in het Nederlands.\n"
 )
 
+# Aanvullende instructie om ook een compacte CSV-tabel te leveren
+SIMPLE_TABLE_ADDON = (
+    "\n\nGeef daarnaast dezelfde verschillen in een compacte tabel met 4 kolommen (Onderwerp, ASR, Andere verzekeraar, Verschillen).\n"
+    "Geef exact dezelfde tabel ook als CSV in één codeblock met taal-tag csv (alleen de tabel, geen extra tekst).\n"
+)
+
 
 def read_pdf_bytes(file_bytes: bytes) -> str:
     parts = []
@@ -104,7 +110,7 @@ def extract_csv_block(text: str) -> Optional[str]:
 def main():
     st.set_page_config(page_title="ASR vs Andere verzekeraar – AI polisvergelijker", layout="wide")
     st.title("ASR vs Andere verzekeraar – AI polisvergelijker")
-    st.caption("Upload twee PDF's (ASR en andere verzekeraar). Kies ‘Simpel’ voor korte bullets of ‘Uitgebreid’ voor tabel+CSV.")
+    st.caption("Upload twee PDF's (ASR en andere verzekeraar). Kies ‘Simpel’ voor bullets of ‘Uitgebreid’ voor tabel+CSV.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -113,6 +119,7 @@ def main():
         file_other = st.file_uploader("PDF – Andere verzekeraar", type=["pdf"], key="pdf_other")
 
     mode = st.selectbox("Vergelijkingsmodus", ["Simpel (inhoud)", "Uitgebreid (tabel + CSV)"])
+    want_table_simple = st.checkbox("Toon resultaat als tabel (ook bij Simpel)", value=True)
     max_chars = st.slider("Max. tekens per document", 5_000, 200_000, 40_000, step=5_000)
 
     st.sidebar.header("AI-instellingen")
@@ -144,9 +151,11 @@ def main():
             return s[: max_chars]
 
         if mode.startswith("Simpel"):
-            system_prompt = SIMPLE_SYSTEM_PROMPT
+            system_prompt = SIMPLE_SYSTEM_PROMPT + (SIMPLE_TABLE_ADDON if want_table_simple else "")
             user_msg = (
-                "Geef beknopt de belangrijkste verschillen in bullets (max ~12): dekking, uitsluitingen, limieten, voorwaarden, plichten, schadeafhandeling.\n\n"
+                "Geef beknopt de belangrijkste verschillen."
+                + (" Voeg ook de compacte tabel en CSV toe." if want_table_simple else "")
+                + "\n\n"
                 f"ASR (ingekort):\n{trunc(text_asr)}\n\n"
                 f"Andere verzekeraar (ingekort):\n{trunc(text_other)}\n"
             )
@@ -177,7 +186,8 @@ def main():
         st.subheader("AI-resultaat")
         st.markdown(content)
 
-        if not mode.startswith("Simpel"):
+        # Tabelweergave via CSV, zowel in Uitgebreid als in Simpel (indien aangevinkt)
+        if (not mode.startswith("Simpel")) or (mode.startswith("Simpel") and want_table_simple):
             csv_text = extract_csv_block(content)
             if csv_text:
                 try:
@@ -193,9 +203,9 @@ def main():
                 except Exception:
                     st.info("Kon CSV-onderdeel niet parseren. Download of kopieer het CSV-codeblok handmatig.")
             else:
-                st.info("Geen CSV-codeblok gedetecteerd in AI-output. Je kunt de tabel handmatig kopiëren.")
+                st.info("Geen CSV-codeblok gedetecteerd in AI-output. Kies ‘Uitgebreid’ of laat de AI een tabel/CSV genereren.")
 
-    st.caption("Snel: kies ‘Simpel (inhoud)’. Uitgebreid: kies ‘Uitgebreid (tabel + CSV)’.")
+    st.caption("Snel: ‘Simpel (inhoud)’. Mooie tabel: vink ‘Toon resultaat als tabel’ aan of kies ‘Uitgebreid’.\nSecrets via Streamlit Cloud instellen.")
 
 
 if __name__ == "__main__":

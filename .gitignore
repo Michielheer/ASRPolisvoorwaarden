@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editors/IDE
+.vscode/
+.idea/
+
+# Data/Artifacts
+*.pdf
+outputs/
